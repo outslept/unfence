@@ -1,8 +1,8 @@
-# md-fence
+# unfence
 
-A tiny, predictable parser for Markdown fenced code block info strings. It extracts language, attributes, and line highlights with zero dependencies.
+A tiny predictable parser for Markdown fenced code block info strings and blocks. Extracts language, attributes, and line highlights with zero dependencies.
 
-## Add metadata
+## Usage
 
 ````markdown
 ```ts {1,3-5} title="App.tsx" line-numbers
@@ -13,6 +13,13 @@ bar();
 baz();
 ```
 ````
+
+```ts
+import { parseInfo, normalize } from "unfence";
+
+const raw = parseInfo('ts {1,3-5} title="App.tsx" line-numbers');
+const meta = normalize(raw);
+```
 
 Normalized meta:
 
@@ -52,7 +59,7 @@ Bare flags are converted to `true`:
 line-numbers
 ```
 
-Numbers and `true`/`false` values are coerced to their corresponding types.
+Unquoted numbers and `true`/`false` values are coerced to their corresponding types.
 
 Quoted strings can use either double or single quotes:
 
@@ -65,6 +72,7 @@ Supported escapes:
 
 ```text
 \n
+\r
 \t
 \"
 \'
@@ -89,7 +97,9 @@ hl="1,3-5"
 
 ## API
 
-### `parseInfo(info: string, opts?)`
+### `parseInfo(info: string, opts?: ParseOptions): FenceInfo`
+
+Parses a fence info string into language, raw attributes, and line highlights.
 
 Returns:
 
@@ -112,7 +122,9 @@ Options:
 
 Both options default to `true`.
 
-### `extractBlocks(md: string)`
+### `extractBlocks(md: string): FenceBlock[]`
+
+Extracts fenced code blocks from a Markdown string.
 
 Returns:
 
@@ -127,10 +139,12 @@ Supports:
 
 - Backtick fences (` ``` `)
 - Tilde fences (` ~~~ `)
-- Matching fence lengths
-- Up to 3 spaces of indentation
+- Matching fence lengths (3 or more characters)
+- Up to 3 spaces or tabs of indentation
 
-### `parseBlocks(md: string, opts?)`
+### `parseBlocks(md: string, opts?: ParseOptions)`
+
+Extracts fenced code blocks and parses each block's `info` string.
 
 Returns:
 
@@ -138,13 +152,13 @@ Returns:
 Array<{
   info: string;
   code: string;
-  meta: ReturnType<typeof parseInfo>;
+  meta: FenceInfo;
 }>
 ```
 
-### `normalize(meta, options?)`
+### `normalize(meta: FenceInfo, options?: NormalizeOptions): NormalizedMeta`
 
-Maps known keys and merges highlight aliases.
+Maps known attribute keys to canonical fields and merges highlight aliases.
 
 Options:
 
@@ -182,7 +196,9 @@ Returns:
 }
 ```
 
-### `parseLineSpec(value)`
+### `parseLineSpec(value: Scalar): number[]`
+
+Parses a line range specification string or number into a sorted array of unique line numbers.
 
 Example:
 
@@ -190,3 +206,7 @@ Example:
 parseLineSpec("1,3-5");
 // → [1, 3, 4, 5]
 ```
+
+## License
+
+MIT

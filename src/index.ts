@@ -1,45 +1,49 @@
-export type Scalar = string | number | boolean;
+export { normalize, parseLineSpec } from "./normalize.js";
+export type {
+  FenceBlock,
+  FenceInfo,
+  KnownKey,
+  NormalizedMeta,
+  NormalizeOptions,
+  ParseOptions,
+  Scalar,
+} from "./types.js";
 
-export interface FenceInfo {
-  lang?: string;
-  attrs: Record<string, Scalar>;
-  highlight: number[];
-}
+import type { FenceBlock, FenceInfo, ParseOptions, Scalar } from "./types.js";
 
-export interface ParseOptions {
-  lowerCaseKeys?: boolean;
-  treatFirstBareAsLang?: boolean;
-}
+const CH_TAB = 9;
+const CH_LF = 10;
+const CH_CR = 13;
+const CH_SPACE = 32;
+const CH_DQUOTE = 34;
+const CH_SQUOTE = 39;
+const CH_COMMA = 44;
+const CH_DASH = 45;
+const CH_DOT = 46;
+const CH_0 = 48;
+const CH_9 = 57;
+const CH_EQ = 61;
+const CH_BACKSLASH = 92;
+const CH_BACKTICK = 96;
+const CH_N = 110;
+const CH_R = 114;
+const CH_T = 116;
+const CH_LBRACE = 123;
+const CH_RBRACE = 125;
+const CH_TILDE = 126;
 
-export interface FenceBlock {
-  info: string;
-  code: string;
-}
+const CHAR_SPACE = 1;
+const CHAR_BARE_STOP = 2;
+const CHAR_TABLE = new Uint8Array(128);
+CHAR_TABLE[CH_SPACE] = CHAR_SPACE | CHAR_BARE_STOP;
+CHAR_TABLE[CH_TAB] = CHAR_SPACE | CHAR_BARE_STOP;
+CHAR_TABLE[CH_LF] = CHAR_SPACE | CHAR_BARE_STOP;
+CHAR_TABLE[CH_CR] = CHAR_SPACE | CHAR_BARE_STOP;
+CHAR_TABLE[CH_EQ] = CHAR_BARE_STOP;
+CHAR_TABLE[CH_LBRACE] = CHAR_BARE_STOP;
+CHAR_TABLE[CH_RBRACE] = CHAR_BARE_STOP;
 
-export type KnownKey = "title" | "filename" | "lineNumbers" | "pinned" | "collapsed";
-
-export interface NormalizeOptions {
-  lowercaseKeys?: boolean;
-  mergeHighlightAttr?: boolean;
-  keyMap?: Partial<Record<KnownKey, string[]>>;
-}
-
-export interface NormalizedMeta {
-  lang?: string;
-  highlight: number[];
-  title?: string;
-  filename?: string;
-  lineNumbers?: boolean;
-  pinned?: boolean;
-  collapsed?: boolean;
-  attrs: Record<string, Scalar>;
-}
-
-function coerceBool(val: Scalar): boolean {
-  if (typeof val === "boolean") return val;
-  if (typeof val === "number") return val !== 0;
-  return !["false", "0", "no", "off"].includes(val.toLowerCase());
-}
+const compareAsc = (a: number, b: number): number => a - b;
 
 interface Cursor {
   index: number;
@@ -47,92 +51,142 @@ interface Cursor {
   length: number;
 }
 
-const isSpace = (c?: string) => c === " " || c === "\t" || c === "\n" || c === "\r";
-const isDigit = (c?: string) => c !== undefined && c >= "0" && c <= "9";
-
 function skipWs(cursor: Cursor): void {
-  while (cursor.index < cursor.length && isSpace(cursor.str[cursor.index])) cursor.index++;
+  const { str, length } = cursor;
+  let i = cursor.index;
+  while (i < length) {
+    const ch = str.charCodeAt(i);
+    if (ch >= 128 || (CHAR_TABLE[ch]! & CHAR_SPACE) === 0) break;
+    i++;
+  }
+  cursor.index = i;
 }
 
-function readQuoted(cursor: Cursor, quote: '"' | "'"): string {
-  cursor.index++;
+function readQuoted(cursor: Cursor, quoteCode: number): string {
+  const { str, length } = cursor;
+  let i = cursor.index + 1;
+  let chunkStart = i;
   let out = "";
-  while (cursor.index < cursor.length) {
-    const c = cursor.str[cursor.index++];
-    if (c === "\\") {
-      if (cursor.index >= cursor.length) throw new Error("unterminated escape");
-      const e = cursor.str[cursor.index++];
-      switch (e) {
-        case "n":
+
+  while (i < length) {
+    const ch = str.charCodeAt(i);
+    if (ch === quoteCode) {
+      cursor.index = i + 1;
+      return out.length === 0 ? str.slice(chunkStart, i) : out + str.slice(chunkStart, i);
+    }
+    if (ch === CH_BACKSLASH) {
+      if (i > chunkStart) out += str.slice(chunkStart, i);
+      i++;
+      if (i >= length) {
+        cursor.index = i;
+        throw new Error("unterminated escape");
+      }
+      const esc = str.charCodeAt(i++);
+      switch (esc) {
+        case CH_N:
           out += "\n";
           break;
-        case "r":
+        case CH_R:
           out += "\r";
           break;
-        case "t":
+        case CH_T:
           out += "\t";
           break;
-        case '"':
-          out += '"';
-          break;
-        case "'":
-          out += "'";
-          break;
-        case "\\":
-          out += "\\";
-          break;
         default:
-          out += e;
+          out += String.fromCharCode(esc);
           break;
       }
-    } else if (c === quote) {
-      return out;
+      chunkStart = i;
     } else {
-      out += c;
+      i++;
     }
   }
+
+  cursor.index = i;
   throw new Error("unterminated string");
 }
 
 function readBare(cursor: Cursor): string {
+  const { str, length } = cursor;
   const start = cursor.index;
-  while (cursor.index < cursor.length) {
-    const c = cursor.str[cursor.index];
-    if (isSpace(c) || c === "=" || c === "{" || c === "}") break;
-    cursor.index++;
+  let i = start;
+  while (i < length) {
+    const ch = str.charCodeAt(i);
+    if (ch < 128 && (CHAR_TABLE[ch]! & CHAR_BARE_STOP) !== 0) break;
+    i++;
   }
-  return cursor.str.slice(start, cursor.index);
+  cursor.index = i;
+  return i === start ? "" : str.slice(start, i);
 }
 
-function coerceScalar(raw: string, fromQuoted: boolean): Scalar {
-  if (fromQuoted) return raw;
-  const l = raw.toLowerCase();
-  if (l === "true") return true;
-  if (l === "false") return false;
-  if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
-    const num = Number(raw);
+function isNumericLiteral(raw: string): boolean {
+  const len = raw.length;
+  if (len === 0) return false;
+  let i = 0;
+  let ch = raw.charCodeAt(0);
+  if (ch === CH_DASH) {
+    if (len === 1) return false;
+    i = 1;
+    ch = raw.charCodeAt(1);
+  }
+  if (ch < CH_0 || ch > CH_9) return false;
+  i++;
+  let sawDot = false;
+  for (; i < len; i++) {
+    ch = raw.charCodeAt(i);
+    if (ch >= CH_0 && ch <= CH_9) continue;
+    if (ch === CH_DOT && !sawDot && i + 1 < len) {
+      sawDot = true;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function coerceBareScalar(raw: string): Scalar {
+  const len = raw.length;
+  if (len === 4) {
+    if (raw === "true" || raw.toLowerCase() === "true") return true;
+  } else if (len === 5) {
+    if (raw === "false" || raw.toLowerCase() === "false") return false;
+  }
+  if (isNumericLiteral(raw)) {
+    const num = +raw;
     if (Number.isFinite(num)) return num;
   }
   return raw;
 }
 
 function expectDigit(cursor: Cursor): number {
-  if (!isDigit(cursor.str[cursor.index])) throw new Error(`expected digit at ${cursor.index}`);
-  const start = cursor.index;
-  while (isDigit(cursor.str[cursor.index])) cursor.index++;
-  return parseInt(cursor.str.slice(start, cursor.index), 10);
+  const { str, length } = cursor;
+  let i = cursor.index;
+  let d = str.charCodeAt(i) - CH_0;
+  if (!(d >= 0 && d <= 9)) throw new Error(`expected digit at ${i}`);
+  let val = d;
+  i++;
+  while (i < length) {
+    d = str.charCodeAt(i) - CH_0;
+    if (d < 0 || d > 9) break;
+    val = val * 10 + d;
+    i++;
+  }
+  cursor.index = i;
+  return val;
 }
 
 function parseHighlightBlock(cursor: Cursor, hl: Set<number>): void {
+  const { str, length } = cursor;
   cursor.index++;
   skipWs(cursor);
   let needValue = true;
-  while (cursor.index < cursor.length) {
-    if (cursor.str[cursor.index] === "}") {
+  while (cursor.index < length) {
+    const ch = str.charCodeAt(cursor.index);
+    if (ch === CH_RBRACE) {
       cursor.index++;
       return;
     }
-    if (cursor.str[cursor.index] === ",") {
+    if (ch === CH_COMMA) {
       if (needValue) throw new Error("trailing comma in highlight block");
       cursor.index++;
       skipWs(cursor);
@@ -142,12 +196,14 @@ function parseHighlightBlock(cursor: Cursor, hl: Set<number>): void {
     const startLine = expectDigit(cursor);
     let endLine = startLine;
     skipWs(cursor);
-    if (cursor.str[cursor.index] === "-") {
+    if (cursor.index < length && str.charCodeAt(cursor.index) === CH_DASH) {
       cursor.index++;
       skipWs(cursor);
       endLine = expectDigit(cursor);
     }
-    for (let k = Math.min(startLine, endLine); k <= Math.max(startLine, endLine); k++) hl.add(k);
+    const lo = startLine <= endLine ? startLine : endLine;
+    const hi = startLine <= endLine ? endLine : startLine;
+    for (let k = lo; k <= hi; k++) hl.add(k);
     skipWs(cursor);
     needValue = false;
   }
@@ -156,44 +212,52 @@ function parseHighlightBlock(cursor: Cursor, hl: Set<number>): void {
 
 function readValue(cursor: Cursor): Scalar {
   skipWs(cursor);
-  const currentChar = cursor.str[cursor.index];
-  if (currentChar === '"' || currentChar === "'") {
-    return readQuoted(cursor, currentChar as '"' | "'");
+  if (cursor.index < cursor.length) {
+    const ch = cursor.str.charCodeAt(cursor.index);
+    if (ch === CH_DQUOTE || ch === CH_SQUOTE) {
+      return readQuoted(cursor, ch);
+    }
   }
-  const raw = readBare(cursor);
-  return coerceScalar(raw, false);
+  return coerceBareScalar(readBare(cursor));
 }
 
-export function parseInfo(info: string, opts: ParseOptions = {}): FenceInfo {
-  const lowerCaseKeys = opts.lowerCaseKeys ?? true;
-  const treatFirstBareAsLang = opts.treatFirstBareAsLang ?? true;
+export function parseInfo(info: string, opts?: ParseOptions): FenceInfo {
+  const len = info.length;
+  if (len === 0) {
+    return { attrs: {}, highlight: [] };
+  }
 
-  const cursor: Cursor = { index: 0, str: info, length: info.length };
+  const lowerCaseKeys = opts?.lowerCaseKeys ?? true;
+  const treatFirstBareAsLang = opts?.treatFirstBareAsLang ?? true;
+
+  const cursor: Cursor = { index: 0, str: info, length: len };
 
   let lang: string | undefined;
   const attrs: Record<string, Scalar> = {};
-  const hl = new Set<number>();
+  let hl: Set<number> | null = null;
   let sawBareToken = false;
 
   skipWs(cursor);
-  while (cursor.index < cursor.length) {
-    if (cursor.str[cursor.index] === "{") {
+  while (cursor.index < len) {
+    if (info.charCodeAt(cursor.index) === CH_LBRACE) {
+      hl ??= new Set<number>();
       parseHighlightBlock(cursor, hl);
       skipWs(cursor);
       continue;
     }
 
     const token = readBare(cursor);
-    if (!token) {
-      if (cursor.str[cursor.index] === "}") throw new Error(`unexpected '}' at ${cursor.index}`);
-      if (cursor.str[cursor.index] === "=") throw new Error(`unexpected '=' at ${cursor.index}`);
-      if (cursor.index < cursor.length) cursor.index++;
-      skipWs(cursor);
-      continue;
+    if (token.length === 0) {
+      const ch = info.charCodeAt(cursor.index);
+      throw new Error(
+        ch === CH_RBRACE
+          ? `unexpected '}' at ${cursor.index}`
+          : `unexpected '=' at ${cursor.index}`,
+      );
     }
 
     skipWs(cursor);
-    if (cursor.str[cursor.index] === "=") {
+    if (cursor.index < len && info.charCodeAt(cursor.index) === CH_EQ) {
       cursor.index++;
       const value = readValue(cursor);
       const key = lowerCaseKeys ? token.toLowerCase() : token;
@@ -202,8 +266,7 @@ export function parseInfo(info: string, opts: ParseOptions = {}): FenceInfo {
       continue;
     }
 
-    const firstBare = !sawBareToken;
-    if (firstBare && treatFirstBareAsLang) {
+    if (!sawBareToken && treatFirstBareAsLang) {
       lang = token;
     } else {
       const key = lowerCaseKeys ? token.toLowerCase() : token;
@@ -213,18 +276,106 @@ export function parseInfo(info: string, opts: ParseOptions = {}): FenceInfo {
     skipWs(cursor);
   }
 
-  const base = { attrs, highlight: Array.from(hl).sort((a, b) => a - b) };
-  return lang !== undefined ? { ...base, lang } : base;
+  let highlight: number[];
+  if (hl === null || hl.size === 0) {
+    highlight = [];
+  } else {
+    highlight = Array.from(hl);
+    if (highlight.length > 1) highlight.sort(compareAsc);
+  }
+
+  return lang !== undefined ? { attrs, highlight, lang } : { attrs, highlight };
 }
 
+const NEEDLE_BACKTICK_3 = "\n```";
+const NEEDLE_TILDE_3 = "\n~~~";
+
 export function extractBlocks(md: string): FenceBlock[] {
-  const re = /(^|\r?\n)[ \t]{0,3}(```+|~~~+)([^\r\n]*)\r?\n([\s\S]*?)\r?\n\2(?=\r?\n|$)/g;
+  const len = md.length;
   const out: FenceBlock[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(md))) {
-    const [, , , infoRaw = "", code = ""] = m;
-    out.push({ info: infoRaw.trim(), code });
+  if (len < 7) return out;
+
+  let lineStart = 0;
+  while (lineStart < len) {
+    let i = lineStart;
+    let indent = 0;
+    while (i < len && indent < 4) {
+      const ch = md.charCodeAt(i);
+      if (ch !== CH_SPACE && ch !== CH_TAB) break;
+      indent++;
+      i++;
+    }
+
+    if (indent <= 3 && i + 2 < len) {
+      const fch = md.charCodeAt(i);
+      if (
+        (fch === CH_BACKTICK || fch === CH_TILDE) &&
+        md.charCodeAt(i + 1) === fch &&
+        md.charCodeAt(i + 2) === fch
+      ) {
+        const fenceStart = i;
+        i += 3;
+        while (i < len && md.charCodeAt(i) === fch) i++;
+        const fLen = i - fenceStart;
+
+        const openNl = md.indexOf("\n", i);
+        if (openNl === -1) break;
+
+        const infoEnd = openNl > i && md.charCodeAt(openNl - 1) === CH_CR ? openNl - 1 : openNl;
+        const codeStart = openNl + 1;
+
+        const needle =
+          fLen === 3
+            ? fch === CH_BACKTICK
+              ? NEEDLE_BACKTICK_3
+              : NEEDLE_TILDE_3
+            : "\n" + md.slice(fenceStart, i);
+
+        let searchFrom = codeStart;
+        let matchedClose = -1;
+        let afterFence = -1;
+
+        while (searchFrom < len) {
+          const idx = md.indexOf(needle, searchFrom);
+          if (idx === -1) break;
+          const endIdx = idx + 1 + fLen;
+          if (
+            endIdx === len ||
+            md.charCodeAt(endIdx) === CH_LF ||
+            (md.charCodeAt(endIdx) === CH_CR &&
+              endIdx + 1 < len &&
+              md.charCodeAt(endIdx + 1) === CH_LF)
+          ) {
+            matchedClose = idx;
+            afterFence = endIdx;
+            break;
+          }
+          searchFrom = idx + 1;
+        }
+
+        if (matchedClose !== -1) {
+          const info = i === infoEnd ? "" : md.slice(i, infoEnd).trim();
+          const codeEnd =
+            matchedClose > codeStart && md.charCodeAt(matchedClose - 1) === CH_CR
+              ? matchedClose - 1
+              : matchedClose;
+          out.push({ info, code: md.slice(codeStart, codeEnd) });
+
+          if (afterFence >= len) return out;
+          lineStart = md.charCodeAt(afterFence) === CH_CR ? afterFence + 2 : afterFence + 1;
+          continue;
+        }
+
+        lineStart = openNl + 1;
+        continue;
+      }
+    }
+
+    const nextNl = md.indexOf("\n", i);
+    if (nextNl === -1) break;
+    lineStart = nextNl + 1;
   }
+
   return out;
 }
 
@@ -232,97 +383,10 @@ export function parseBlocks(
   md: string,
   opts?: ParseOptions,
 ): Array<FenceBlock & { meta: FenceInfo }> {
-  return extractBlocks(md).map((b) => ({ ...b, meta: parseInfo(b.info, opts) }));
-}
-
-export function parseLineSpec(v: Scalar): number[] {
-  if (typeof v === "number" && Number.isFinite(v)) return [Math.trunc(v)];
-  if (typeof v !== "string") return [];
-
-  const set = new Set<number>();
-  const parts = v
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const isDigits = (s: string) => /^\d+$/.test(s);
-
-  for (const part of parts) {
-    const dash = part.indexOf("-");
-    if (dash >= 0) {
-      const left = part.slice(0, dash).trim();
-      const right = part.slice(dash + 1).trim();
-      if (!isDigits(left) || !isDigits(right)) continue;
-
-      let startLine = Number(left);
-      let endLine = Number(right);
-
-      if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) continue;
-      if (startLine > endLine) [startLine, endLine] = [endLine, startLine];
-
-      for (let k = startLine; k <= endLine; k++) set.add(k);
-    } else {
-      if (!isDigits(part)) continue;
-      const x = Number(part);
-      if (Number.isFinite(x)) set.add(x);
-    }
+  const blocks = extractBlocks(md);
+  const out: Array<FenceBlock & { meta: FenceInfo }> = [];
+  for (const b of blocks) {
+    out.push({ info: b.info, code: b.code, meta: parseInfo(b.info, opts) });
   }
-  return Array.from(set).sort((a, b) => a - b);
-}
-
-const DEFAULT_KEYMAP = {
-  title: ["title"],
-  filename: ["filename", "file", "name"],
-  lineNumbers: ["linenumbers", "line-numbers", "linenos"],
-  pinned: ["pinned"],
-  collapsed: ["collapsed"],
-} satisfies Record<KnownKey, string[]>;
-
-export function normalize(meta: FenceInfo, options: NormalizeOptions = {}): NormalizedMeta {
-  const lowercaseKeys = options.lowercaseKeys ?? true;
-  const mergeHighlightAttr = options.mergeHighlightAttr ?? true;
-  const keyMap: Record<KnownKey, string[]> = { ...DEFAULT_KEYMAP, ...options.keyMap };
-
-  const out: NormalizedMeta = { highlight: [...meta.highlight], attrs: {} };
-  if (meta.lang) out.lang = meta.lang;
-
-  const canonical = new Map<string, KnownKey>();
-  for (const k of Object.keys(keyMap) as KnownKey[]) {
-    for (const a of keyMap[k]) canonical.set(a.toLowerCase(), k);
-  }
-
-  let extraHighlight: number[] = [];
-  for (const [rawKey, val] of Object.entries(meta.attrs)) {
-    const lcKey = rawKey.toLowerCase();
-    if (mergeHighlightAttr && (lcKey === "highlight" || lcKey === "lines" || lcKey === "hl")) {
-      extraHighlight = parseLineSpec(val);
-      continue;
-    }
-
-    const canon = canonical.get(lcKey);
-    if (canon === "lineNumbers") {
-      out.lineNumbers = coerceBool(val);
-      continue;
-    }
-
-    if (canon === "title" || canon === "filename") {
-      out[canon] = typeof val === "string" ? val : String(val);
-      continue;
-    }
-
-    if (canon === "pinned" || canon === "collapsed") {
-      out[canon] = coerceBool(val);
-      continue;
-    }
-
-    const outKey = lowercaseKeys ? lcKey : rawKey;
-    out.attrs[outKey] = val;
-  }
-
-  if (extraHighlight.length) {
-    const set = new Set<number>(out.highlight);
-    for (const x of extraHighlight) set.add(x);
-    out.highlight = Array.from(set).sort((a, b) => a - b);
-  }
-
   return out;
 }

@@ -112,13 +112,7 @@ export function parseLineSpec(v: Scalar): number[] {
   return res;
 }
 
-const KNOWN_KEYS: readonly KnownKey[] = [
-  "title",
-  "filename",
-  "lineNumbers",
-  "pinned",
-  "collapsed",
-];
+const KNOWN_KEYS: readonly KnownKey[] = ["title", "filename", "lineNumbers", "pinned", "collapsed"];
 
 const DEFAULT_KEYMAP = {
   title: ["title"],

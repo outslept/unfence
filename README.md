@@ -132,13 +132,13 @@ Returns:
 Array<{
   info: string;
   code: string;
-}>
+}>;
 ```
 
 Supports:
 
 - Backtick fences (` ``` `)
-- Tilde fences (` ~~~ `)
+- Tilde fences (`~~~`)
 - Matching fence lengths (3 or more characters)
 - Up to 3 spaces or tabs of indentation
 
@@ -153,7 +153,7 @@ Array<{
   info: string;
   code: string;
   meta: FenceInfo;
-}>
+}>;
 ```
 
 ### `normalize(meta: FenceInfo, options?: NormalizeOptions): NormalizedMeta`
@@ -172,14 +172,14 @@ Options:
 
 Default key map:
 
-| Input | Output |
-|---|---|
-| `title` | `meta.title` |
-| `filename`, `file`, `name` | `meta.filename` |
-| `line-numbers`, `linenumbers`, `linenos` | `meta.lineNumbers` |
-| `pinned` | `meta.pinned` |
-| `collapsed` | `meta.collapsed` |
-| `highlight`, `lines`, `hl` | merged into `meta.highlight` |
+| Input                                    | Output                       |
+| ---------------------------------------- | ---------------------------- |
+| `title`                                  | `meta.title`                 |
+| `filename`, `file`, `name`               | `meta.filename`              |
+| `line-numbers`, `linenumbers`, `linenos` | `meta.lineNumbers`           |
+| `pinned`                                 | `meta.pinned`                |
+| `collapsed`                              | `meta.collapsed`             |
+| `highlight`, `lines`, `hl`               | merged into `meta.highlight` |
 
 Returns:
 
